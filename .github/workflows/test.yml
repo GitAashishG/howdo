@@ -1,0 +1,94 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Run integration tests (unix)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x tests/test_providers.sh
+          ./tests/test_providers.sh ./target/release/howdo
+
+      - name: Run integration tests (windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python tests/mock_server.py 9999 &
+          MOCK_PID=$!
+
+          # Wait for mock server to be ready (up to 10s)
+          for i in $(seq 1 20); do
+            if curl -s http://127.0.0.1:9999 >/dev/null 2>&1; then
+              echo "Mock server ready"
+              break
+            fi
+            sleep 0.5
+          done
+
+          TMPDIR=$(mktemp -d)
+          mkdir -p "$TMPDIR/howdo"
+          CONFIG="$TMPDIR/howdo/config.json"
+          BINARY="./target/release/howdo.exe"
+          PASS=0; FAIL=0
+
+          run_test() {
+            local name="$1" expected="$2"
+            output=$(echo "n" | XDG_CONFIG_HOME="$TMPDIR" "$BINARY" test query 2>&1 || true)
+            if echo "$output" | grep -q "$expected"; then
+              echo "  PASS: $name"; PASS=$((PASS + 1))
+            else
+              echo "  FAIL: $name"; echo "    Got: $output"; FAIL=$((FAIL + 1))
+            fi
+          }
+
+          echo '{"provider":"local","base_url":"http://127.0.0.1:9999/v1","model":"default"}' > "$CONFIG"
+          run_test "Local LLM" "mock-openai-ok"
+
+          echo '{"provider":"openai","base_url":"http://127.0.0.1:9999/v1","model":"gpt-4o-mini","api_key":"sk-test"}' > "$CONFIG"
+          run_test "OpenAI" "mock-openai-ok"
+
+          echo '{"provider":"azure_openai","base_url":"http://127.0.0.1:9999/openai/deployments/gpt-4/chat/completions?api-version=2024-12-01-preview","model":"","api_key":"azure-test"}' > "$CONFIG"
+          run_test "Azure OpenAI" "mock-openai-ok"
+
+          echo '{"provider":"anthropic","base_url":"http://127.0.0.1:9999","model":"claude-sonnet-4-20250514","api_key":"sk-ant-test"}' > "$CONFIG"
+          run_test "Anthropic" "mock-anthropic-ok"
+
+          echo '{"provider":"other","base_url":"http://127.0.0.1:9999/v1","model":"mixtral","api_key":"other-test"}' > "$CONFIG"
+          run_test "Other" "mock-openai-ok"
+
+          version=$("$BINARY" --version 2>&1)
+          if echo "$version" | grep -qE "^howdo [0-9]"; then
+            echo "  PASS: --version"; PASS=$((PASS + 1))
+          else
+            echo "  FAIL: --version"; FAIL=$((FAIL + 1))
+          fi
+
+          echo ""
+          echo "Results: $PASS passed, $FAIL failed"
+          [ "$FAIL" -eq 0 ] || exit 1

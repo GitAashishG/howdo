@@ -1,0 +1,25 @@
+[package]
+name = "howdo"
+version = "0.1.0"
+edition = "2021"
+description = "Natural language to terminal commands"
+license = "MIT"
+repository = "https://github.com/GitAashishG/howdo"
+homepage = "https://github.com/GitAashishG/howdo"
+keywords = ["cli", "terminal", "llm", "ai", "natural-language"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+minreq = { version = "=2.11.0", features = ["https"] }
+crossterm = "0.28"
+rustyline = "15"
+
+[profile.release]
+strip = true
+lto = true
+
+[[bin]]
+name = "howdo"
+path = "src/main.rs"
