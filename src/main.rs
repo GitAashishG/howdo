@@ -9,7 +9,8 @@ use std::process::Command;
 
 #[derive(Serialize)]
 struct ChatRequest {
-    model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
     messages: Vec<Message>,
     temperature: f32,
     max_tokens: u32,
@@ -310,42 +311,17 @@ fn detect_os() -> String {
     os.to_string()
 }
 
-fn build_prompt(query: &str, os: &str, shell: &str) -> String {
-    let examples = if os.contains("macOS") {
-        "Examples for this OS:\n\
-         Q: kill process on port 3000\nA: kill -9 $(lsof -ti :3000)\n\
-         Q: find large files\nA: find . -type f -size +100M\n\
-         Q: copy output to clipboard\nA: echo hello | pbcopy"
-    } else if os.contains("Windows") {
-        "Examples for this OS:\n\
-         Q: kill process on port 3000\nA: Stop-Process -Id (Get-NetTCPConnection -LocalPort 3000).OwningProcess -Force\n\
-         Q: find large files\nA: Get-ChildItem -Recurse | Where-Object {$_.Length -gt 100MB}\n\
-         Q: list all services\nA: Get-Service | Format-Table Name, Status"
-    } else {
-        "Examples for this OS:\n\
-         Q: kill process on port 3000\nA: fuser -k 3000/tcp\n\
-         Q: find large files\nA: find . -type f -size +100M\n\
-         Q: copy output to clipboard\nA: echo hello | xclip -selection clipboard"
-    };
+fn build_prompt(_query: &str, os: &str, shell: &str) -> String {
+    let cwd = env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| ".".into());
 
     format!(
-        "You are a command-line assistant. Convert the user's natural language request into a single shell command.\n\n\
-         Rules:\n\
-         - Output ONLY the command. No explanations, no markdown, no backticks.\n\
-         - One line only. Chain multiple steps with ; or | if needed.\n\
-         - Prefer simple, common commands over clever tricks.\n\n\
-         OS: {os}\n\
-         Shell: {shell}\n\
-         Working directory: {cwd}\n\n\
-         {examples}\n\n\
-         Q: {query}\nA:",
-        os = os,
+        "/no_think\nGive one-line {shell} command for {os}. No explanation. No markdown. Just the command.\n\
+         Current directory: {cwd}",
         shell = shell,
-        cwd = env::current_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| ".".into()),
-        examples = examples,
-        query = query,
+        os = os,
+        cwd = cwd,
     )
 }
 
@@ -367,8 +343,13 @@ fn call_openai_compatible(
     config: &Config,
     system_prompt: &str,
 ) -> Result<String, String> {
+    let model = match config.model.as_str() {
+        "" | "default" => None,
+        m => Some(m.to_string()),
+    };
+
     let request_body = ChatRequest {
-        model: config.model.clone(),
+        model,
         messages: vec![
             Message {
                 role: "system".into(),
@@ -380,7 +361,7 @@ fn call_openai_compatible(
             },
         ],
         temperature: 0.0,
-        max_tokens: 256,
+        max_tokens: 1024,
     };
 
     let url = if config.provider == "azure_openai" {
@@ -437,7 +418,7 @@ fn call_anthropic(
 ) -> Result<String, String> {
     let request_body = AnthropicRequest {
         model: config.model.clone(),
-        max_tokens: 256,
+        max_tokens: 1024,
         system: system_prompt.to_string(),
         messages: vec![Message {
             role: "user".into(),
