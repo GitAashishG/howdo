@@ -9,7 +9,8 @@ use std::process::Command;
 
 #[derive(Serialize)]
 struct ChatRequest {
-    model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
     messages: Vec<Message>,
     temperature: f32,
     max_tokens: u32,
@@ -310,33 +311,17 @@ fn detect_os() -> String {
     os.to_string()
 }
 
-fn build_prompt(query: &str, os: &str, shell: &str) -> String {
-    let os_hint = if os.contains("macOS") {
-        "This is macOS (BSD). Do NOT use Linux commands. No netstat -tulpn, no systemctl, no apt."
-    } else if os.contains("Windows") {
-        "This is Windows. Use PowerShell cmdlets. No bash/Unix commands."
-    } else {
-        "This is Linux. Do NOT use macOS commands. No lsof -ti, no open, no pbcopy."
-    };
+fn build_prompt(_query: &str, os: &str, shell: &str) -> String {
+    let cwd = env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| ".".into());
 
     format!(
-        "You are a command-line assistant. Convert the user's natural language request into a single shell command.\n\n\
-         Rules:\n\
-         - Output ONLY the command. No explanations, no markdown, no backticks.\n\
-         - One line only. Chain multiple steps with ; or | if needed.\n\
-         - {os_hint}\n\
-         - Prefer simple, common commands over clever tricks.\n\n\
-         OS: {os}\n\
-         Shell: {shell}\n\
-         Working directory: {cwd}\n\n\
-         Request: {query}",
-        os_hint = os_hint,
-        os = os,
+        "/no_think\nGive one-line {shell} command for {os}. No explanation. No markdown. Just the command.\n\
+         Current directory: {cwd}",
         shell = shell,
-        cwd = env::current_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| ".".into()),
-        query = query,
+        os = os,
+        cwd = cwd,
     )
 }
 
@@ -358,8 +343,13 @@ fn call_openai_compatible(
     config: &Config,
     system_prompt: &str,
 ) -> Result<String, String> {
+    let model = match config.model.as_str() {
+        "" | "default" => None,
+        m => Some(m.to_string()),
+    };
+
     let request_body = ChatRequest {
-        model: config.model.clone(),
+        model,
         messages: vec![
             Message {
                 role: "system".into(),
@@ -371,7 +361,7 @@ fn call_openai_compatible(
             },
         ],
         temperature: 0.0,
-        max_tokens: 256,
+        max_tokens: 1024,
     };
 
     let url = if config.provider == "azure_openai" {
@@ -428,7 +418,7 @@ fn call_anthropic(
 ) -> Result<String, String> {
     let request_body = AnthropicRequest {
         model: config.model.clone(),
-        max_tokens: 256,
+        max_tokens: 1024,
         system: system_prompt.to_string(),
         messages: vec![Message {
             role: "user".into(),

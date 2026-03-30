@@ -2,6 +2,8 @@
 
 Natural language → terminal commands. Just ask.
 
+> **Note:** Tested with Qwen 3.5-9B (reasoning disabled) and GPT-5.2 on macOS. Linux and Windows support is included and CI-validated, but not extensively battle-tested. Some prompt tuning may be needed for other models or platforms. Feel free to [open an issue](https://github.com/GitAashishG/howdo/issues) or submit a PR for bugs, improvements, or model/platform-specific fixes.
+
 ```
 $ q list files in descending order of size
 
@@ -60,6 +62,8 @@ You can also use the full name directly: `howdo whats on port 8000` (no special 
 
 Run the interactive configuration wizard:
 
+![Install and configure](static/install-configure.gif)
+
 ```bash
 howdo /config
 ```
@@ -90,6 +94,8 @@ Config is stored in `~/.config/howdo/config.json` (or `%APPDATA%\howdo\config.js
 Re-run `howdo /config` at any time to change providers.
 
 ## Usage
+
+![Usage example](static/usage-example.gif)
 
 ```bash
 howdo <what you want to do in plain english>
