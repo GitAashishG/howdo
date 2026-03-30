@@ -98,9 +98,9 @@ Re-run `howdo /config` at any time to change providers.
 ![Usage example](static/usage-example.gif)
 
 ```bash
-howdo <what you want to do in plain english>
+howdo <show files sorted by the file size>
 # or with the alias:
-q <what you want to do in plain english>
+q <show files sorted by the file size>
 ```
 
 The tool will:
