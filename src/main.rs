@@ -311,12 +311,21 @@ fn detect_os() -> String {
 }
 
 fn build_prompt(query: &str, os: &str, shell: &str) -> String {
-    let os_hint = if os.contains("macOS") {
-        "This is macOS (BSD). Do NOT use Linux commands. No netstat -tulpn, no systemctl, no apt."
+    let examples = if os.contains("macOS") {
+        "Examples for this OS:\n\
+         Q: kill process on port 3000\nA: kill -9 $(lsof -ti :3000)\n\
+         Q: find large files\nA: find . -type f -size +100M\n\
+         Q: copy output to clipboard\nA: echo hello | pbcopy"
     } else if os.contains("Windows") {
-        "This is Windows. Use PowerShell cmdlets. No bash/Unix commands."
+        "Examples for this OS:\n\
+         Q: kill process on port 3000\nA: Stop-Process -Id (Get-NetTCPConnection -LocalPort 3000).OwningProcess -Force\n\
+         Q: find large files\nA: Get-ChildItem -Recurse | Where-Object {$_.Length -gt 100MB}\n\
+         Q: list all services\nA: Get-Service | Format-Table Name, Status"
     } else {
-        "This is Linux. Do NOT use macOS commands. No lsof -ti, no open, no pbcopy."
+        "Examples for this OS:\n\
+         Q: kill process on port 3000\nA: fuser -k 3000/tcp\n\
+         Q: find large files\nA: find . -type f -size +100M\n\
+         Q: copy output to clipboard\nA: echo hello | xclip -selection clipboard"
     };
 
     format!(
@@ -324,18 +333,18 @@ fn build_prompt(query: &str, os: &str, shell: &str) -> String {
          Rules:\n\
          - Output ONLY the command. No explanations, no markdown, no backticks.\n\
          - One line only. Chain multiple steps with ; or | if needed.\n\
-         - {os_hint}\n\
          - Prefer simple, common commands over clever tricks.\n\n\
          OS: {os}\n\
          Shell: {shell}\n\
          Working directory: {cwd}\n\n\
-         Request: {query}",
-        os_hint = os_hint,
+         {examples}\n\n\
+         Q: {query}\nA:",
         os = os,
         shell = shell,
         cwd = env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| ".".into()),
+        examples = examples,
         query = query,
     )
 }
