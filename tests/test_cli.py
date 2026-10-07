@@ -422,22 +422,26 @@ class CliTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows shell execution")
     def test_actual_windows_powershell_and_cmd(self):
+        # .NET/Defender cold startup on shared Windows runners can exceed 10s.
+        # Relax only native-shell tests, not the bounded HTTP request tests.
         for executable in ["powershell", "pwsh", "cmd.exe"]:
             if not shutil.which(executable):
                 continue
             with self.subTest(executable=executable):
                 self.server.state["command"] = "echo HOWDO_EXECUTED"
-                result = self.run_cli("--shell", executable, "--yes", "test")
+                result = self.run_cli("--shell", executable, "--yes", "test", timeout=60)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("HOWDO_EXECUTED", result.stdout)
                 self.server.state["command"] = "exit /b 7" if executable == "cmd.exe" else "exit 7"
-                self.assertEqual(self.run_cli("--shell", executable, "--yes", "test").returncode, 7)
+                self.assertEqual(
+                    self.run_cli("--shell", executable, "--yes", "test", timeout=60).returncode, 7
+                )
 
     @unittest.skipUnless(os.name == "nt", "Windows shell quoting")
     def test_windows_shell_preserves_quotes_unicode_and_native_status(self):
         target = self.root / "quoted output.txt"
         self.server.state["command"] = f'echo "HOWDO QUOTED">"{target}" & exit /b 7'
-        result = self.run_cli("--shell", "cmd.exe", "--yes", "test")
+        result = self.run_cli("--shell", "cmd.exe", "--yes", "test", timeout=60)
         self.assertEqual(result.returncode, 7, result.stderr)
         self.assertEqual(target.read_text().strip(), '"HOWDO QUOTED"')
         data = 'café "quoted" & <tag> \\ path'
@@ -449,11 +453,13 @@ class CliTests(unittest.TestCase):
                 self.server.state["command"] = (
                     f"[System.IO.File]::WriteAllText('{path}', '{data}', [System.Text.UTF8Encoding]::new()) # comment"
                 )
-                result = self.run_cli("--shell", executable, "--yes", "test")
+                result = self.run_cli("--shell", executable, "--yes", "test", timeout=60)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(target.read_text(encoding="utf-8"), data)
                 self.server.state["command"] = "cmd.exe /D /C 'exit 7' # comment"
-                self.assertEqual(self.run_cli("--shell", executable, "--yes", "test").returncode, 7)
+                self.assertEqual(
+                    self.run_cli("--shell", executable, "--yes", "test", timeout=60).returncode, 7
+                )
 
     @unittest.skipIf(os.name == "nt", "Unix PTY")
     def test_interactive_confirmation_editing_and_cancellation(self):

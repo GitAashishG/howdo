@@ -184,7 +184,7 @@ try { & $env:HOWDO_INSTALL_TEST_SCRIPT } catch { Write-Error $_; exit 1 }
             env=self.env,
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=60,
         )
 
     def test_verified_install_and_cleanup(self):
