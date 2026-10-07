@@ -39,7 +39,10 @@ class MockLLM(BaseHTTPRequestHandler):
             else:
                 response = {
                     "choices": [
-                        {"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}
+                        {
+                            "message": {"role": "assistant", "content": text, "tool_calls": []},
+                            "finish_reason": "stop",
+                        }
                     ]
                 }
         data = response if isinstance(response, bytes) else json.dumps(response).encode()

@@ -251,6 +251,82 @@ class CliTests(unittest.TestCase):
         result = self.run_cli("--print", "test")
         self.assertEqual(result.stdout, "echo '# a ; b'\n", result.stderr)
 
+    def test_lm_studio_empty_tool_calls_and_separate_reasoning_are_accepted(self):
+        self.server.state["response"] = {
+            "model": "qwen3.5-0.8b",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": 'echo "howdo-connection-ok"',
+                        "reasoning_content": "This is separate reasoning, not executable content.",
+                        "tool_calls": [],
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        result = self.run_cli("--print", "test")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'echo "howdo-connection-ok"\n')
+        self.assertEqual(result.stderr, "")
+
+    def test_nonempty_or_malformed_tool_calls_never_execute(self):
+        for calls in [
+            [{"type": "function", "function": {"name": "run"}}],
+            [None],
+            {},
+            "none",
+            False,
+            0,
+        ]:
+            with self.subTest(calls=calls):
+                self.server.state["response"] = {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "echo HOWDO_MUST_NOT_EXECUTE",
+                                "tool_calls": calls,
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ]
+                }
+                result = self.run_cli("--yes", "test")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+
+    @unittest.skipIf(os.name == "nt", "Unix PTY wizard")
+    def test_wizard_saves_lm_studio_profile_after_empty_tool_call_response(self):
+        self.server.state["response"] = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": 'echo "howdo-connection-ok"',
+                        "reasoning_content": "Separate reasoning must not be treated as executable content.",
+                        "tool_calls": [],
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+        output = self.terminal(
+            ["/config", "--profile", "local"],
+            [
+                ("Provider (1-5)", "1\n"),
+                ("Endpoint URL", self.base_url + "/v1\n"),
+                ("Model", "default\n"),
+                ("Explicit credential environment variable", "\n"),
+                ("API key (hidden", "\n"),
+                ("Test authenticated inference", "y\n"),
+            ],
+        )
+        profile = json.loads(self.config_path.read_text())["profiles"]["local"]
+        self.assertEqual(profile["base_url"], self.base_url + "/v1")
+        self.assertIn('Inference succeeded (not executed): echo "howdo-connection-ok"', output)
+        self.assertNotIn("\r\nhowdo-connection-ok\r\n", output)
+
     def test_incomplete_refused_and_empty_choices_fail(self):
         for response in [
             {"choices": []},
@@ -264,6 +340,25 @@ class CliTests(unittest.TestCase):
                 result = self.run_cli("--yes", "test")
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(result.stdout, "")
+
+    def test_reasoning_budget_exhaustion_has_an_actionable_error(self):
+        self.server.state["response"] = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "reasoning_content": "All tokens used for reasoning.",
+                        "tool_calls": [],
+                    },
+                    "finish_reason": "length",
+                }
+            ]
+        }
+        result = self.run_cli("--yes", "test")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("finish_reason: length", result.stderr)
+        self.assertIn("request_options.max_tokens", result.stderr)
 
     def test_http_errors_are_nonzero_sanitized_and_redacted(self):
         self.config["api_key"] = "PRIVATE_TEST_KEY"

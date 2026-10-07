@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Accept OpenAI-compatible responses with an empty `tool_calls` array, including LM Studio/Qwen responses with separate reasoning content. Actual tool calls and malformed tool-call fields remain rejected.
+- Explain token-budget exhaustion explicitly rather than reporting it as a generic tool-use/incomplete response.
+
 ## 0.2.0 — 2026-10-07
 
 ### Safety and correctness

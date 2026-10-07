@@ -161,7 +161,7 @@ struct Choice {
 struct ChatMessage {
     content: Option<String>,
     refusal: Option<String>,
-    tool_calls: Option<Value>,
+    tool_calls: Option<Vec<Value>>,
     function_call: Option<Value>,
 }
 
@@ -187,6 +187,9 @@ pub fn parse_response(bytes: &[u8], provider: Provider) -> Result<String> {
     let parse_error = |e| format!("Failed to parse API response: {e}");
     let text = if provider == Provider::Anthropic {
         let response: AnthropicResponse = serde_json::from_slice(bytes).map_err(parse_error)?;
+        if response.stop_reason.as_deref() == Some("max_tokens") {
+            return Err("Model response was truncated (stop_reason: max_tokens). Increase request_options.max_tokens or disable reasoning/thinking in the model server. Nothing was executed.".into());
+        }
         if response
             .stop_reason
             .as_deref()
@@ -210,6 +213,9 @@ pub fn parse_response(bytes: &[u8], provider: Provider) -> Result<String> {
             .into_iter()
             .next()
             .ok_or("Model returned no choices.")?;
+        if choice.finish_reason.as_deref() == Some("length") {
+            return Err("Model response was truncated (finish_reason: length). Increase request_options.max_tokens or disable reasoning/thinking in the model server. Nothing was executed.".into());
+        }
         if choice
             .finish_reason
             .as_deref()
@@ -219,7 +225,11 @@ pub fn parse_response(bytes: &[u8], provider: Provider) -> Result<String> {
                 .refusal
                 .as_deref()
                 .is_some_and(|text| !text.is_empty())
-            || choice.message.tool_calls.is_some()
+            || choice
+                .message
+                .tool_calls
+                .as_ref()
+                .is_some_and(|calls| !calls.is_empty())
             || choice.message.function_call.is_some()
         {
             return Err("Provider returned an incomplete, refused, or tool-use response. Nothing was executed.".into());
@@ -292,6 +302,64 @@ mod tests {
     }
 
     #[test]
+    fn lm_studio_empty_tool_calls_do_not_reject_valid_command_content() {
+        let response = json!({
+            "model": "qwen3.5-0.8b",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "echo \"howdo-connection-ok\"",
+                    "reasoning_content": "Reasoning is separate from the executable command.",
+                    "tool_calls": []
+                },
+                "finish_reason": "stop"
+            }]
+        });
+        for provider in [
+            Provider::Local,
+            Provider::Openai,
+            Provider::AzureOpenai,
+            Provider::Other,
+        ] {
+            let text = parse_response(&serde_json::to_vec(&response).unwrap(), provider).unwrap();
+            assert_eq!(
+                safety::command_from_response(&text).unwrap(),
+                "echo \"howdo-connection-ok\""
+            );
+        }
+    }
+
+    #[test]
+    fn only_absent_null_or_empty_tool_call_arrays_are_accepted() {
+        for tool_calls in [None, Some(Value::Null), Some(json!([]))] {
+            let mut message = json!({"content": "echo ok"});
+            if let Some(tool_calls) = tool_calls {
+                message["tool_calls"] = tool_calls;
+            }
+            let response = json!({"choices": [{"message": message, "finish_reason": "stop"}]});
+            assert_eq!(
+                parse_response(&serde_json::to_vec(&response).unwrap(), Provider::Local).unwrap(),
+                "echo ok"
+            );
+        }
+        for tool_calls in [
+            json!([{"type": "function", "function": {"name": "run"}}]),
+            json!([null]),
+            json!({}),
+            json!("none"),
+            json!(false),
+            json!(0),
+        ] {
+            let response = json!({"choices": [{"message": {"content": "echo ok", "tool_calls": tool_calls}, "finish_reason": "stop"}]});
+            assert!(
+                parse_response(&serde_json::to_vec(&response).unwrap(), Provider::Local).is_err()
+            );
+        }
+        let response = json!({"choices": [{"message": {"content": "echo ok", "tool_calls": []}, "finish_reason": "tool_calls"}]});
+        assert!(parse_response(&serde_json::to_vec(&response).unwrap(), Provider::Local).is_err());
+    }
+
+    #[test]
     fn rejects_truncation_refusal_and_missing_text() {
         for response in [
             json!({"choices": []}),
@@ -317,5 +385,27 @@ mod tests {
             Provider::Anthropic
         )
         .is_err());
+    }
+
+    #[test]
+    fn truncation_errors_explain_the_token_budget_problem() {
+        for (provider, response, reason) in [
+            (
+                Provider::Local,
+                json!({"choices": [{"message": {"content": "", "reasoning_content": "budget spent reasoning", "tool_calls": []}, "finish_reason": "length"}]}),
+                "length",
+            ),
+            (
+                Provider::Anthropic,
+                json!({"content": [{"type": "text", "text": "partial"}], "stop_reason": "max_tokens"}),
+                "max_tokens",
+            ),
+        ] {
+            let error = parse_response(&serde_json::to_vec(&response).unwrap(), provider)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(reason));
+            assert!(error.contains("request_options.max_tokens"));
+        }
     }
 }
