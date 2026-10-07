@@ -148,6 +148,7 @@ Anthropic uses its native system field and content blocks; OpenAI-only options a
 Put options **before** the query. Once the query starts, later arguments—including flags—are treated as query text. Use `--` for a query starting with a dash or reserved option.
 
 ```sh
+howdo show files sorted by file size
 howdo find python files modified in the last week
 howdo --print show disk usage sorted by size
 howdo --json list files
