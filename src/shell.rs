@@ -1,4 +1,5 @@
 use crate::error::Result;
+use base64::Engine;
 use std::env;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
@@ -51,8 +52,8 @@ impl Shell {
             "pwsh" => (Kind::PowerShell, "PowerShell 7 (pwsh)".into()),
             "powershell" => (Kind::PowerShell, "Windows PowerShell".into()),
             "cmd" => (Kind::Cmd, "cmd.exe".into()),
-            "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" => (Kind::Posix, basename.to_owned()),
-            _ => return Err("Unsupported shell. Choose sh, bash, zsh, fish, dash, ksh, powershell, pwsh, or cmd.".into()),
+            "sh" | "bash" | "zsh" | "fish" | "dash" | "ash" | "ksh" | "mksh" => (Kind::Posix, basename.to_owned()),
+            _ => return Err("Unsupported shell. Choose sh, bash, zsh, fish, dash, ash, ksh, mksh, powershell, pwsh, or cmd.".into()),
         };
         Ok(Self {
             executable: executable.into(),
@@ -65,17 +66,40 @@ impl Shell {
         match self.kind {
             Kind::Posix => vec!["-c".into(), command.into()],
             Kind::Cmd => vec!["/D".into(), "/S".into(), "/C".into(), command.into()],
-            Kind::PowerShell => vec![
-                "-NoLogo".into(), "-NoProfile".into(), "-Command".into(),
-                // PowerShell otherwise reports success after some native-command failures.
-                format!("$ErrorActionPreference = 'Stop'; $global:LASTEXITCODE = 0\n{command}\n$__howdoSuccess = $?; if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}; if (-not $__howdoSuccess) {{ exit 1 }}"),
-            ],
+            Kind::PowerShell => {
+                // A newline prevents an inline comment from swallowing the status check.
+                let script = format!("$ErrorActionPreference = 'Stop'; $global:LASTEXITCODE = 0\n{command}\n$__howdoSuccess = $?; if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}; if (-not $__howdoSuccess) {{ exit 1 }}");
+                // EncodedCommand uses UTF-16LE on all platforms and avoids the Windows
+                // command-line parser changing quotes, backslashes, or Unicode in the code.
+                let bytes: Vec<_> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+                vec![
+                    "-NoLogo".into(),
+                    "-NoProfile".into(),
+                    "-OutputFormat".into(),
+                    "Text".into(),
+                    "-EncodedCommand".into(),
+                    base64::engine::general_purpose::STANDARD.encode(bytes),
+                ]
+            }
         }
     }
 
     pub fn run(&self, command: &str) -> Result<i32> {
-        let status = Command::new(&self.executable)
-            .args(self.arguments(command))
+        let mut process = Command::new(&self.executable);
+        #[cfg(windows)]
+        if self.kind == Kind::Cmd {
+            use std::os::windows::process::CommandExt;
+            // cmd does not understand the C-runtime escaping used by Command::arg.
+            // /S removes just the outer quotes, leaving reviewed command text intact.
+            process
+                .args(["/D", "/S", "/C"])
+                .raw_arg(format!("\"{command}\""));
+        } else {
+            process.args(self.arguments(command));
+        }
+        #[cfg(not(windows))]
+        process.args(self.arguments(command));
+        let status = process
             .status()
             .map_err(|e| format!("Failed to execute {}: {e}", self.executable.display()))?;
         Ok(exit_code(status))
@@ -143,6 +167,23 @@ mod tests {
         assert!(shell
             .arguments("Write-Output hello")
             .contains(&"-NoProfile".into()));
+    }
+
+    #[test]
+    fn powershell_encoding_preserves_code_and_terminates_comments() {
+        let shell = Shell::from_executable("pwsh").unwrap();
+        let command = "Write-Output 'café \"quoted\"' # trailing comment";
+        let args = shell.arguments(command);
+        assert!(args.contains(&"-EncodedCommand".into()));
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(args.last().unwrap())
+            .unwrap();
+        let utf16: Vec<_> = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        let script = String::from_utf16(&utf16).unwrap();
+        assert!(script.contains(&format!("\n{command}\n")));
     }
 
     #[test]

@@ -1,8 +1,10 @@
 use crate::error::{Error, Result};
 use crate::safety::deceptive_character;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal;
-use std::io::{self, BufRead, IsTerminal, Write};
+#[cfg(test)]
+use std::io::BufRead;
+use std::io::{self, IsTerminal, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -38,23 +40,32 @@ pub enum Decision {
     Cancel,
 }
 
-pub fn decision(reader: &mut impl BufRead, risky: bool) -> Result<Decision> {
+#[cfg(test)]
+fn decision(reader: &mut impl BufRead, risky: bool) -> Result<Decision> {
     let mut input = String::new();
     if reader.read_line(&mut input)? == 0 {
         return Ok(Decision::Cancel);
     }
-    Ok(match input.trim() {
+    Ok(answer(&input, risky))
+}
+
+fn answer(input: &str, risky: bool) -> Decision {
+    match input.trim() {
         "RUN" if risky => Decision::Run,
         "y" | "Y" | "yes" | "YES" if !risky => Decision::Run,
         "e" | "E" => Decision::Edit,
         _ => Decision::Cancel,
-    })
+    }
 }
 
 pub fn confirm_command(risky: bool) -> Result<Decision> {
     if !interactive() {
         return Ok(Decision::Cancel);
     }
+    // Read fresh terminal events, not stdin's line buffer. Buffered answers from
+    // setup or a previous request must never approve a command not yet reviewed.
+    let _raw = RawModeGuard::new()?;
+    discard_pending_input()?;
     let mut stderr = io::stderr().lock();
     if risky {
         write!(
@@ -65,7 +76,83 @@ pub fn confirm_command(risky: bool) -> Result<Decision> {
         write!(stderr, "Run? (y/e/N; Enter cancels) ")?;
     }
     stderr.flush()?;
-    decision(&mut io::stdin().lock(), risky)
+    let mut input = String::new();
+    let mut invalid = false;
+    loop {
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        if interrupt(&key) {
+            write!(stderr, "\r\n")?;
+            return Err(Error::Cancelled);
+        }
+        let enter = key.code == KeyCode::Enter
+            || (matches!(key.code, KeyCode::Char('j' | 'm'))
+                && key.modifiers.contains(KeyModifiers::CONTROL));
+        if enter {
+            write!(stderr, "\r\n")?;
+            return Ok(if invalid {
+                Decision::Cancel
+            } else {
+                answer(&input, risky)
+            });
+        }
+        match key.code {
+            KeyCode::Esc => {
+                write!(stderr, "\r\n")?;
+                return Ok(Decision::Cancel);
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                write!(stderr, "\r\n")?;
+                return Ok(Decision::Cancel);
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                for _ in 0..input.len() {
+                    write!(stderr, "\x08 \x08")?;
+                }
+                input.clear();
+                invalid = false;
+            }
+            KeyCode::Backspace => {
+                if input.pop().is_some() {
+                    write!(stderr, "\x08 \x08")?;
+                }
+            }
+            KeyCode::Char(_)
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {}
+            KeyCode::Char(c) if c.is_ascii_graphic() || c == ' ' => {
+                if input.len() < 32 {
+                    input.push(c);
+                    write!(stderr, "{c}")?;
+                } else {
+                    invalid = true;
+                }
+            }
+            KeyCode::Char(_) => invalid = true,
+            _ => {}
+        }
+        stderr.flush()?;
+    }
+}
+
+fn interrupt(key: &KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('c' | 'C')) && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn discard_pending_input() -> Result<()> {
+    while event::poll(Duration::ZERO)? {
+        if let Event::Key(key) = event::read()? {
+            if key.kind != KeyEventKind::Release && (key.code == KeyCode::Esc || interrupt(&key)) {
+                return Err(Error::Cancelled);
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn confirm(prompt: &str) -> Result<bool> {
@@ -158,11 +245,17 @@ impl Drop for RawModeGuard {
     }
 }
 
-struct ProgressLine;
+struct ProgressLine {
+    dumb: bool,
+}
 
 impl Drop for ProgressLine {
     fn drop(&mut self) {
-        let _ = write!(io::stderr(), "\r\x1b[2K");
+        let _ = if self.dumb {
+            write!(io::stderr(), "\r\n")
+        } else {
+            write!(io::stderr(), "\r\x1b[2K")
+        };
         let _ = io::stderr().flush();
     }
 }
@@ -172,11 +265,16 @@ pub fn progress<T: Send + 'static>(
     label: &str,
     task: impl FnOnce() -> Result<T> + Send + 'static,
 ) -> Result<T> {
-    if !interactive() || std::env::var("TERM").is_ok_and(|term| term == "dumb") {
+    if !interactive() {
         return task();
     }
     let _raw = RawModeGuard::new()?;
-    let _line = ProgressLine;
+    let dumb = std::env::var("TERM").is_ok_and(|term| term == "dumb");
+    let _line = ProgressLine { dumb };
+    if dumb {
+        write!(io::stderr(), "{label}... (Esc/Ctrl+C cancels)")?;
+        io::stderr().flush()?;
+    }
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = sender.send(task());
@@ -184,29 +282,26 @@ pub fn progress<T: Send + 'static>(
     let started = Instant::now();
     loop {
         match receiver.recv_timeout(Duration::from_millis(100)) {
-            Ok(result) => return result,
+            Ok(result) => {
+                // Drain on successful completion too: a fast response can arrive
+                // before the periodic poll and otherwise leave a queued "y" behind.
+                discard_pending_input()?;
+                return result;
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err("Request worker stopped unexpectedly.".into())
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
-        while event::poll(Duration::ZERO)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press
-                    && (key.code == KeyCode::Esc
-                        || (key.code == KeyCode::Char('c')
-                            && key.modifiers.contains(KeyModifiers::CONTROL)))
-                {
-                    return Err(Error::Cancelled);
-                }
-            }
+        discard_pending_input()?;
+        if !dumb {
+            write!(
+                io::stderr(),
+                "\r{label}... {:.1}s (Esc/Ctrl+C cancels)",
+                started.elapsed().as_secs_f32()
+            )?;
+            io::stderr().flush()?;
         }
-        write!(
-            io::stderr(),
-            "\r{label}... {:.1}s (Esc/Ctrl+C cancels)",
-            started.elapsed().as_secs_f32()
-        )?;
-        io::stderr().flush()?;
     }
 }
 

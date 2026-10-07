@@ -156,7 +156,7 @@ howdo --explain find large files
 howdo --profile work --shell /bin/zsh list files
 ```
 
-- Interactive input requires an explicit **y**. Enter, EOF, and unrecognized answers cancel.
+- Interactive input requires typing **y** and submitting it with Enter. An empty answer, EOF, and unrecognized answers cancel. Keys typed while a request is pending cannot approve the future command.
 - **e** opens an editor, then redisplays and rechecks the edited command before asking again. Editing never executes implicitly.
 - Obvious risky commands require typing **RUN**, not merely `y`.
 - With noninteractive stdin, the default is **print-only**, even when `y` is piped in.
@@ -184,7 +184,7 @@ howdo --shell pwsh list files
 $env:HOWDO_SHELL = 'pwsh'
 ```
 
-Full executable paths are preserved. Supported names: `sh`, `bash`, `zsh`, `fish`, `dash`, `ksh`, `powershell`, `pwsh`, and `cmd`. PowerShell launches without profiles; cmd launches with AutoRun disabled. Commands execute in a child shell: `cd`, aliases, and variable assignments do not change the parent shell.
+Full executable paths are preserved. Supported names: `sh`, `bash`, `zsh`, `fish`, `dash`, `ash`, `ksh`, `mksh`, `powershell`, `pwsh`, and `cmd`. PowerShell launches without profiles; cmd launches with AutoRun disabled. Commands execute in a child shell: `cd`, aliases, and variable assignments do not change the parent shell.
 
 Short aliases:
 
@@ -210,6 +210,8 @@ The selected provider receives your query, OS, shell name, and working-directory
 Update with `howdo /update` (or explicitly `/update --yes`). Updates verify exact asset names and SHA-256 before replacing the binary and never downgrade. Failed updates return nonzero. On Windows, a uniquely named backup directory can remain until a running old executable exits.
 
 ## Development
+
+The development test tools require Python 3.11+. They use only the standard library; Ruff is an optional development lint/format tool pinned in `tests/requirements-dev.txt`.
 
 ```sh
 cargo fmt --all -- --check

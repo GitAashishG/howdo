@@ -3,7 +3,9 @@ use crate::error::Result;
 pub const MAX_COMMAND_BYTES: usize = 16 * 1024;
 
 pub fn deceptive_character(c: char) -> bool {
-    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+    matches!(c, '\u{00ad}' | '\u{061c}' | '\u{180e}' | '\u{200b}'..='\u{200f}'
+        | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}'
+        | '\u{e0000}'..='\u{e007f}')
 }
 
 /// Accept only the documented single-line contract. Never "repair" shell syntax.
@@ -203,6 +205,9 @@ mod tests {
             assert!(command_from_response(text).is_err(), "{text:?}");
         }
         assert!(command_from_response(&"a".repeat(MAX_COMMAND_BYTES + 1)).is_err());
+        for character in ['\u{061c}', '\u{2028}', '\u{2029}', '\u{2060}', '\u{e0061}'] {
+            assert!(command_from_response(&format!("echo {character}bad")).is_err());
+        }
     }
 
     #[test]

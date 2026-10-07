@@ -122,9 +122,23 @@ fn request(query: &str, config: &Config, system: &str) -> Result<String> {
             _ => "Check the provider's request requirements.",
         };
         // Some providers echo request details. Redact the credential before rendering any error.
-        let mut detail = String::from_utf8_lossy(&response.body).to_string();
+        let mut detail = match serde_json::from_slice::<Value>(&response.body) {
+            Ok(body) => body
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .or_else(|| body.get("error").and_then(Value::as_str))
+                .or_else(|| body.get("message").and_then(Value::as_str))
+                .unwrap_or("Provider returned a non-success response.")
+                .to_owned(),
+            Err(_) => String::from_utf8_lossy(&response.body).to_string(),
+        };
         if let Some(key) = key {
             detail = detail.replace(&key, "[redacted]");
+            let encoded = serde_json::to_string(&key)?;
+            let encoded_key = &encoded[1..encoded.len() - 1];
+            if encoded_key != key.as_str() {
+                detail = detail.replace(encoded_key, "[redacted]");
+            }
         }
         let detail: String = detail.chars().take(1024).collect();
         return Err(format!("API returned status {}. {advice} {detail}", response.status).into());

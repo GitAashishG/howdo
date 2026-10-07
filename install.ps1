@@ -54,7 +54,9 @@ try {
     Copy-Item -LiteralPath $binaryFile -Destination $staged
     $destination = Join-Path $installDir 'howdo.exe'
     if (Test-Path -LiteralPath $destination) {
-        [System.IO.File]::Replace($staged, $destination, $null)
+        # PowerShell converts $null to an empty string for .NET string parameters.
+        # NullString preserves a real null backup path, including on Windows PowerShell 5.1.
+        [System.IO.File]::Replace($staged, $destination, [System.Management.Automation.Language.NullString]::Value)
     } else {
         [System.IO.File]::Move($staged, $destination)
     }

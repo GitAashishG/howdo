@@ -88,7 +88,11 @@ pub fn configure(path: &Path, profile: &str) -> Result<()> {
         config.api_key_env.as_deref().unwrap_or(""),
     )?;
     config.api_key_env = (!key_env.is_empty()).then_some(key_env);
-    if config.api_key_env.is_none() {
+    if config.api_key_env.is_some() {
+        // Explicit environment credentials never fall back to the saved key;
+        // remove the unused plaintext credential rather than retaining it on disk.
+        config.api_key = None;
+    } else {
         let prompt = if config.api_key.is_some() {
             "API key (hidden; empty keeps the saved key)"
         } else {

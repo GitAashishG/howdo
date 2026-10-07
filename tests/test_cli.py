@@ -49,6 +49,7 @@ class CliTests(unittest.TestCase):
             "OPENAI_API_KEY",
             "AZURE_OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
+            "CUSTOM_TEST_KEY",
             "HOWDO_PROFILE",
             "HOWDO_SHELL",
         ]:
@@ -275,6 +276,18 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("PRIVATE_TEST_KEY", result.stderr)
         self.assertNotIn("\x1b", result.stderr)
 
+    def test_structured_error_credentials_are_decoded_before_redaction(self):
+        key = 'TEST_KEY_WITH_"QUOTES'
+        self.config["api_key"] = key
+        self.save_config()
+        self.server.state.update(
+            status=401, response={"error": {"message": f"Rejected key: {key}"}}
+        )
+        result = self.run_cli("--print", "test")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("[redacted]", result.stderr)
+        self.assertNotIn("TEST_KEY_WITH", result.stderr)
+
     def test_redirects_are_not_followed(self):
         self.server.state.update(status=307, headers={"Location": self.base_url + "/redirect"})
         result = self.run_cli("--print", "test")
@@ -420,6 +433,28 @@ class CliTests(unittest.TestCase):
                 self.server.state["command"] = "exit /b 7" if executable == "cmd.exe" else "exit 7"
                 self.assertEqual(self.run_cli("--shell", executable, "--yes", "test").returncode, 7)
 
+    @unittest.skipUnless(os.name == "nt", "Windows shell quoting")
+    def test_windows_shell_preserves_quotes_unicode_and_native_status(self):
+        target = self.root / "quoted output.txt"
+        self.server.state["command"] = f'echo "HOWDO QUOTED">"{target}" & exit /b 7'
+        result = self.run_cli("--shell", "cmd.exe", "--yes", "test")
+        self.assertEqual(result.returncode, 7, result.stderr)
+        self.assertEqual(target.read_text().strip(), '"HOWDO QUOTED"')
+        data = 'café "quoted" & <tag> \\ path'
+        for executable in ["powershell", "pwsh"]:
+            if not shutil.which(executable):
+                continue
+            with self.subTest(executable=executable):
+                path = str(target).replace("'", "''")
+                self.server.state["command"] = (
+                    f"[System.IO.File]::WriteAllText('{path}', '{data}', [System.Text.UTF8Encoding]::new()) # comment"
+                )
+                result = self.run_cli("--shell", executable, "--yes", "test")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(target.read_text(encoding="utf-8"), data)
+                self.server.state["command"] = "cmd.exe /D /C 'exit 7' # comment"
+                self.assertEqual(self.run_cli("--shell", executable, "--yes", "test").returncode, 7)
+
     @unittest.skipIf(os.name == "nt", "Unix PTY")
     def test_interactive_confirmation_editing_and_cancellation(self):
         def interactive(steps, expected_code=0):
@@ -463,6 +498,40 @@ class CliTests(unittest.TestCase):
         self.assertTrue(data["canonical"], "Terminal canonical mode was not restored")
         self.assertTrue(data["echo"], "Terminal echo was not restored")
         return data["output"]
+
+    @unittest.skipIf(os.name == "nt", "Unix PTY typeahead")
+    def test_keys_entered_during_generation_do_not_approve_a_future_command(self):
+        # The reply arrives before the next progress timeout: this exercises the
+        # completion/input race, not just the slower periodic input-drain path.
+        self.server.state.update(delay=0.15, command="echo HOWDO_PREFILLED")
+        output = self.terminal(["test"], [("Esc/Ctrl+C", "y\n"), ("Run?", "n\n")])
+        self.assertNotIn("\r\nHOWDO_PREFILLED\r\n", output)
+        self.env["TERM"] = "dumb"
+        output = self.terminal(["test"], [("Esc/Ctrl+C", "y\n"), ("Run?", "n\n")])
+        self.assertNotIn("\r\nHOWDO_PREFILLED\r\n", output)
+
+    @unittest.skipIf(os.name == "nt", "Unix PTY environment credentials")
+    def test_wizard_removes_saved_key_when_environment_credentials_are_selected(self):
+        self.config["api_key"] = "OLD_SAVED_TEST_KEY"
+        self.save_config()
+        self.env["CUSTOM_TEST_KEY"] = "NEW_ENV_TEST_KEY"
+        output = self.terminal(
+            ["/config"],
+            [
+                ("Provider (1-5)", "1\n"),
+                ("Endpoint URL", "\n"),
+                ("Model", "\n"),
+                ("Explicit credential environment variable", "CUSTOM_TEST_KEY\n"),
+                ("Test authenticated inference", "y\n"),
+            ],
+        )
+        store = json.loads(self.config_path.read_text())
+        profile = store["profiles"]["default"]
+        self.assertNotIn("api_key", profile)
+        self.assertEqual(profile["api_key_env"], "CUSTOM_TEST_KEY")
+        self.assertNotIn("OLD_SAVED_TEST_KEY", self.config_path.read_text())
+        self.assertNotIn("NEW_ENV_TEST_KEY", output)
+        self.assertEqual(self.requests[0]["headers"]["authorization"], "Bearer NEW_ENV_TEST_KEY")
 
     @unittest.skipIf(os.name == "nt", "Unix PTY wizard")
     def test_wizard_hides_credentials_and_tests_inference_without_execution(self):

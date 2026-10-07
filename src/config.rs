@@ -124,11 +124,20 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
-        self.url()?;
+        let url = self.url()?;
         if !matches!(self.provider, Provider::Local | Provider::AzureOpenai)
             && (self.model.trim().is_empty() || self.model == "default")
         {
             return Err("This provider requires an explicit model name.".into());
+        }
+        if self.provider == Provider::AzureOpenai
+            && self.model.trim().is_empty()
+            && !url.path().contains("/deployments/")
+        {
+            return Err(
+                "Azure endpoints without a deployment in the URL require an explicit model name."
+                    .into(),
+            );
         }
         if self.model.len() > 256 || self.model.chars().any(|c| c.is_control()) {
             return Err("Invalid model name.".into());
@@ -449,6 +458,12 @@ pub fn update(path: &Path, change: impl FnOnce(&mut Store) -> Result<()>) -> Res
     }
     serde_json::to_writer_pretty(&mut temporary, &store)?;
     temporary.write_all(b"\n")?;
+    if temporary.as_file().metadata()?.len() > MAX_CONFIG_BYTES {
+        return Err(
+            "Updated config would exceed the 1 MiB limit; the existing file was not changed."
+                .into(),
+        );
+    }
     temporary.as_file().sync_all()?;
     temporary
         .persist(path)
@@ -523,6 +538,23 @@ mod tests {
         assert!(config.validate().is_err());
         config.timeout_seconds = 30;
         config.request_options.temperature = Some(3.0);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn azure_v1_requires_a_model_but_deployment_urls_do_not() {
+        let mut config = Config::new(
+            Provider::AzureOpenai,
+            "https://example.com/openai/v1/chat/completions".into(),
+            String::new(),
+        );
+        assert!(config.validate().is_err());
+        config.model = "model".into();
+        config.validate().unwrap();
+        config.model.clear();
+        config.base_url = "https://example.com/openai/deployments/model/chat/completions?api-version=2024-12-01-preview".into();
+        config.validate().unwrap();
+        config.base_url.push_str("&api-key=secret");
         assert!(config.validate().is_err());
     }
 
@@ -622,6 +654,29 @@ mod tests {
         })
         .is_err());
         assert_eq!(fs::read(path).unwrap(), original);
+    }
+
+    #[test]
+    fn refuses_to_write_a_config_that_its_reader_cannot_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("howdo/config.json");
+        update(&path, |store| {
+            store.profiles.insert("default".into(), local());
+            Ok(())
+        })
+        .unwrap();
+        let original = fs::read(&path).unwrap();
+        assert!(update(&path, |store| {
+            for index in 0..80 {
+                let mut config = local();
+                config.api_key = Some("x".repeat(16384));
+                store.profiles.insert(format!("profile-{index}"), config);
+            }
+            Ok(())
+        })
+        .is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(load(&path).is_ok());
     }
 
     #[test]

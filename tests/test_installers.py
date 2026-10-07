@@ -14,6 +14,35 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+class ReleaseVersionTests(unittest.TestCase):
+    def test_release_guard_checks_tag_manifest_and_lockfile(self):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        script = workflow.split("python3 - <<'PY'", 1)[1].split("\n          PY", 1)[0]
+        script = "\n".join(
+            line[10:] if line.startswith("          ") else line for line in script.splitlines()
+        )
+        import re
+
+        version = re.search(
+            r'^version = "([^"]+)"', (ROOT / "Cargo.toml").read_text(), re.MULTILINE
+        )[1]
+        for tag, expected in [
+            ("v" + version, 0),
+            ("v99.99.99", 1),
+            ("invalid", 1),
+            ("v" + version + "-rc.1", 1),
+        ]:
+            with self.subTest(tag=tag):
+                result = subprocess.run(
+                    [sys.executable, "-c", script],
+                    cwd=ROOT,
+                    env=dict(os.environ, GITHUB_REF_NAME=tag),
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, expected, result.stderr)
+
+
 @unittest.skipIf(os.name == "nt", "Unix installer")
 class UnixInstallerTests(unittest.TestCase):
     def setUp(self):
