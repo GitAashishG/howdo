@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.2.0 — 2026-10-07
 
 ### Safety and correctness
 - Explicit confirmation; Enter/EOF cancel and piped stdin defaults to print-only.

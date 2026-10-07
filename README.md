@@ -229,16 +229,6 @@ On Windows, pass `target/release/howdo.exe` to the integration suite. Tests use 
 
 CI runs formatting, strict linting, Rust tests, release builds, and integration tests on macOS/Linux/Windows, plus dependency, shell, workflow, and minimum-Rust checks.
 
-### Releases
-
-Pushes to `main` do **not** automatically publish releases. For an intentional stable release:
-
-1. Update the package version in `Cargo.toml` and regenerate `Cargo.lock`.
-2. Commit the version change and merge through a tested PR.
-3. Tag that exact commit with the matching version and push the tag (for example, `v0.2.0`).
-
-The release workflow rejects tag/manifest/lockfile mismatches, waits for the full CI suite, builds the tagged source without editing its version, and publishes four binaries, `SHA256SUMS`, and provenance attestations. Releases are serialized to avoid publication races. Protect `main` with required CI checks and disable force pushes; optionally protect release tags too.
-
 ## License
 
 MIT
