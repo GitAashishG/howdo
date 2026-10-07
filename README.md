@@ -65,6 +65,38 @@ Config location:
 - Windows: `%APPDATA%\howdo\config.json`
 - All platforms: `$XDG_CONFIG_HOME/howdo/config.json` when set
 
+### Choosing a local model for your platform
+
+**NL2Bash** means natural language → Bash commands. Models fine-tuned for NL2Bash or NL2SH can be small and fast, but **Bash is a shell, not an operating system**: GNU/Linux command options are not necessarily valid on macOS, and Bash commands are not PowerShell or cmd commands.
+
+The following are starting points to evaluate, **not a ranking of proven-safe models**:
+
+| Platform / shell | Local-model starting point | Recommendation |
+|---|---|---|
+| Linux / Bash | A Bash-focused NL2Bash or NL2SH fine-tune, such as `qwen2.5-coder-0.5b-nl2bash` or `nl2sh-1.5b` | A reasonable category to try for GNU/Linux workflows. Start with `--print`; these models have **not been benchmarked on Linux here**, and matching the platform does not fix command-logic errors. |
+| macOS / zsh or Bash | A larger instruction-tuned coding model, such as [Qwen2.5-Coder-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct) or Qwen3.5-9B | Prefer a model that can follow the macOS/BSD context rather than assuming a Bash fine-tune is Mac-compatible. These larger candidates have **not been compared on the same 20-case set**; validate BSD `stat`, `date`, and `sed` options before executing. |
+| Windows / PowerShell | An instruction-tuned coding model such as Qwen2.5-Coder-7B-Instruct or Qwen3.5-9B | Select `--shell pwsh` or `--shell powershell` explicitly and evaluate PowerShell-native output. **No local model has been benchmarked for Windows commands here.** A Linux/Bash fine-tune is not a PowerShell recommendation. |
+| Windows / cmd | The same instruction-tuned candidates above, evaluated with explicit cmd context | Validate cmd syntax separately from PowerShell. Windows defaults to cmd; do not assume Bash or PowerShell responses will work there. |
+
+Use an instruction/chat checkpoint and a quantization that fits your hardware. The names `qwen2.5-coder-0.5b-nl2bash` and `nl2sh-1.5b` are the model IDs exposed by our local server, not universal download identifiers. Use the **exact ID your server exposes** (`/v1/models` for LM Studio, or `ollama list` for Ollama).
+
+**LM Studio / v0.2.0 compatibility note:** that release can incorrectly reject valid responses containing `tool_calls: []`. This is a parser issue, not evidence that your model used a tool. The [parser fix](https://github.com/GitAashishG/howdo/commit/bc3a11e8df57ac6f40b5d46a477ce54ca35d7ed8) is on the development branch and is not yet included in the v0.2.0 download.
+
+#### What our macOS spot checks found
+
+We inspected one response per prompt on the same **20 platform-sensitive macOS/zsh tasks**, using `howdo`'s system prompt. No generated commands were executed; results were reviewed against native macOS tools. This is a diagnostic set, **not an overall model accuracy estimate**.
+
+| Local model | Fully correct | Partially correct | GNU/Linux-specific failures | Other incorrect responses |
+|---|---:|---:|---:|---:|
+| `qwen2.5-coder-0.5b-nl2bash` | 6/20 | 1/20 | 7/20 | 6/20 |
+| `nl2sh-1.5b` | 7/20 | 5/20 | 4/20 | 4/20 |
+
+NL2SH showed better BSD/macOS awareness, but both models still made command-logic mistakes. The smaller NL2Bash model proposed a file-editing loop that could lose data; NL2SH constructed shell code from file names and piped it into `sh`. **Neither is recommended for unattended macOS execution.** All 20 outputs from each model passed parse-only zsh syntax checks: valid syntax does not establish correctness or safety.
+
+Before trusting any model, use `howdo --print` on tasks you can verify, including platform-specific operations. Review every command and avoid `--yes` / `--allow-risky` while evaluating. Command-only fine-tunes may also be poor at `--explain`; use an instruction-capable model if explanations are important.
+
+For reasoning models, `request_options.reasoning_effort: "none"` can avoid spending the entire response budget on thinking **if your server/model supports it**. Otherwise use the server's thinking setting or increase `max_tokens`. This changes latency and token use, not the correctness guarantee.
+
 ### Credentials
 
 Provider environment variables take precedence over stored keys:
@@ -94,7 +126,9 @@ HOWDO_PROFILE=work howdo --print list files
 
 Selection order: `--profile`, `HOWDO_PROFILE`, saved `default_profile`. Profile names use ASCII letters, digits, dots, underscores, or hyphens. Existing single-provider configs remain readable as the `default` profile and migrate only on an explicit configuration save or profile switch.
 
-Example multi-profile config (set `OPENAI_API_KEY` outside the file):
+Example **Linux/Bash evaluation** config using NL2Bash, with an alternate NL2SH profile:
+
+These command-focused profiles are **not default-model recommendations for macOS or Windows**; use the platform guidance above to choose a model. Profile names do not override OS detection or shell selection.
 
 ```json
 {
@@ -104,21 +138,23 @@ Example multi-profile config (set `OPENAI_API_KEY` outside the file):
     "local": {
       "provider": "local",
       "base_url": "http://127.0.0.1:1234/v1",
-      "model": "default"
+      "model": "qwen2.5-coder-0.5b-nl2bash"
     },
-    "work": {
-      "provider": "openai",
-      "base_url": "https://api.openai.com/v1",
-      "model": "gpt-4.1-mini"
-    },
-    "proxy": {
-      "provider": "other",
-      "base_url": "https://my-proxy.example/v1",
-      "model": "my-model",
-      "api_key_env": "MY_PROXY_API_KEY"
+    "nl2sh": {
+      "provider": "local",
+      "base_url": "http://127.0.0.1:1234/v1",
+      "model": "nl2sh-1.5b"
     }
   }
 }
+```
+
+Start with generation only, selecting the model and shell explicitly:
+
+```sh
+# Linux/Bash example; nothing is executed
+howdo --profile local --shell /bin/bash --print list files sorted by size
+howdo --profile nl2sh --shell /bin/bash --print list files sorted by size
 ```
 
 ### Model-specific request options
