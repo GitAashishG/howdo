@@ -4,6 +4,7 @@ import json
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 
 class MockLLM(BaseHTTPRequestHandler):
@@ -19,6 +20,14 @@ class MockLLM(BaseHTTPRequestHandler):
             }
         )
         time.sleep(state.get("delay", 0))
+        gate = state.get("response_gate_file")
+        if gate:
+            deadline = time.monotonic() + 10
+            while not Path(gate).exists():
+                if time.monotonic() >= deadline:
+                    self.send_error(500, "Mock response gate was not released")
+                    return
+                time.sleep(0.005)
         response = state.get("response")
         if response is None:
             messages = body.get("messages", [])

@@ -582,11 +582,13 @@ class CliTests(unittest.TestCase):
         self.server.state["delay"] = 2
         interactive([(b"Esc/Ctrl+C", b"\x03")], expected_code=130)
 
-    def terminal(self, args, steps, expected_code=0):
+    def terminal(self, args, steps, expected_code=0, input_signals=None):
         driver = Path(__file__).with_name("pty_driver.py")
         result = subprocess.run(
             [sys.executable, str(driver)],
-            input=json.dumps({"argv": [str(BINARY), *args], "steps": steps}),
+            input=json.dumps(
+                {"argv": [str(BINARY), *args], "steps": steps, "input_signals": input_signals or {}}
+            ),
             text=True,
             capture_output=True,
             env=self.env,
@@ -602,14 +604,21 @@ class CliTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "Unix PTY typeahead")
     def test_keys_entered_during_generation_do_not_approve_a_future_command(self):
-        # The reply arrives before the next progress timeout: this exercises the
-        # completion/input race, not just the slower periodic input-drain path.
-        self.server.state.update(delay=0.15, command="echo HOWDO_PREFILLED")
-        output = self.terminal(["test"], [("Esc/Ctrl+C", "y\n"), ("Run?", "n\n")])
-        self.assertNotIn("\r\nHOWDO_PREFILLED\r\n", output)
-        self.env["TERM"] = "dumb"
-        output = self.terminal(["test"], [("Esc/Ctrl+C", "y\n"), ("Run?", "n\n")])
-        self.assertNotIn("\r\nHOWDO_PREFILLED\r\n", output)
+        # Release the response immediately after input is queued, rather than
+        # guessing a sleep duration that can miss the spinner on a busy runner.
+        for term in ["xterm", "dumb"]:
+            with self.subTest(term=term):
+                gate = self.root / f"response-gate-{term}"
+                self.env["TERM"] = term
+                self.server.state.update(
+                    response_gate_file=str(gate), command="echo HOWDO_PREFILLED"
+                )
+                output = self.terminal(
+                    ["test"],
+                    [("Esc/Ctrl+C", "y\n"), ("Run?", "n\n")],
+                    input_signals={"0": str(gate)},
+                )
+                self.assertNotIn("\r\nHOWDO_PREFILLED\r\n", output)
 
     @unittest.skipIf(os.name == "nt", "Unix PTY environment credentials")
     def test_wizard_removes_saved_key_when_environment_credentials_are_selected(self):

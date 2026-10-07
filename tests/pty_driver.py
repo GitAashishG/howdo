@@ -8,6 +8,7 @@ import signal
 import sys
 import termios
 import time
+from pathlib import Path
 
 spec = json.load(sys.stdin)
 argv = spec["argv"]
@@ -31,6 +32,8 @@ try:
             data += block
         if step < len(steps) and steps[step][0] in data[position:]:
             os.write(master, steps[step][1])
+            if path := spec.get("input_signals", {}).get(str(step)):
+                Path(path).touch()
             position = len(data)
             step += 1
         waited, status = os.waitpid(pid, os.WNOHANG)
