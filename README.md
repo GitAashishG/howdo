@@ -1,166 +1,241 @@
 # howdo
 
-Natural language → terminal commands. Just ask.
+Natural language → a terminal command you can review, edit, copy, or run.
 
-> **Note:** Tested with Qwen 3.5-9B (reasoning disabled) and GPT-5.2 on macOS. Linux and Windows support is included and CI-validated, but not extensively battle-tested. Some prompt tuning may be needed for other models or platforms. Feel free to [open an issue](https://github.com/GitAashishG/howdo/issues) or submit a PR for bugs, improvements, or model/platform-specific fixes.
+```text
+$ howdo list files sorted by size
 
+  > ls -lS
+
+Run? (y/e/N; Enter cancels) y
 ```
-$ q list files in descending order of size
 
-  ❯ find . -maxdepth 1 -type f -printf '%s\t%p\n' | sort -nr
-
-  Run? (y/e/n) y
-
-  4096    ./README.md
-  1234    ./Cargo.toml
-```
+A small Rust CLI, not an autonomous agent. One request generates a command; an optional second request explains it. No conversation history, file-content uploads, automatic execution retries, or background agent loops.
 
 ## Install
 
-### Quick install (no Rust required)
+Prebuilt binaries support macOS (arm64/x86_64), Linux (x86_64, glibc 2.35+), and Windows (x86_64). Installers and self-update **require a matching SHA-256 checksum**; older releases without `SHA256SUMS` must be installed manually or built from source.
 
-Download a prebuilt binary from [Releases](https://github.com/GitAashishG/howdo/releases) and put it on your PATH:
-
-```bash
+```sh
 # macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/GitAashishG/howdo/main/install.sh | sh
 ```
 
 ```powershell
-# Windows (PowerShell)
+# Windows
 irm https://raw.githubusercontent.com/GitAashishG/howdo/main/install.ps1 | iex
 ```
 
-Or manually: download the binary for your platform from the releases page, rename to `howdo`, and move to a directory on your PATH.
+Prefer downloading and reviewing an installer before executing it. Unix installs to `/usr/local/bin` (using sudo only if needed); Windows installs to `%LOCALAPPDATA%\Programs\howdo` and adds it to the user PATH. Set `HOWDO_INSTALL_DIR` to an absolute path for a different destination. Unix users must add a custom directory to PATH themselves.
 
-### Build from source (requires Rust)
+For a portable Windows install without PATH changes, set `HOWDO_NO_PATH_UPDATE=1` before running the installer.
 
-```bash
+Build from source with Rust **1.89+** and a C/C++ build toolchain (required by TLS dependencies):
+
+```sh
 git clone https://github.com/GitAashishG/howdo.git
 cd howdo
-cargo build --release
-
-# Add to PATH (pick one)
-sudo cp target/release/howdo /usr/local/bin/
-# or
-echo 'export PATH="$PATH:/path/to/howdo/target/release"' >> ~/.zshrc
+cargo build --release --locked
+# Add target/release to PATH, or copy the binary into a directory already on PATH.
 ```
 
-### Shell setup (recommended)
+Release assets include GitHub build-provenance attestations. With the GitHub CLI, you can independently verify provenance:
 
-Add this to your `~/.zshrc` or `~/.bashrc` for a short alias with glob protection:
-
-```bash
-alias q='noglob howdo'
+```sh
+gh attestation verify ./howdo-aarch64-apple-darwin --repo GitAashishG/howdo
 ```
 
-This lets you type `q whats on port 8000?` without the shell expanding `8000?` as a glob.
+Checksums detect corruption; they do not independently authenticate a publisher if the release account is compromised.
 
-You can also use the full name directly: `howdo whats on port 8000` (no special characters = no alias needed).
+## Configure
 
-## Setup
-
-Run the interactive configuration wizard:
-
-![Install and configure](static/install-configure.gif)
-
-```bash
+```sh
 howdo /config
 ```
 
-You'll be guided to pick your provider and enter the required details:
+The wizard supports local LLMs, OpenAI, Azure OpenAI, Anthropic, and other OpenAI-compatible servers. Key input is hidden. Its optional connection test makes a real authenticated inference request, potentially incurring a small API charge, but **never executes the returned command**. Failed validation or inference does not overwrite the existing configuration. Shell startup files are never changed automatically.
 
+- LM Studio: `http://127.0.0.1:1234/v1`; `default` can omit the model field.
+- Ollama: `http://127.0.0.1:11434/v1`; specify an installed model from `ollama list`.
+- Azure: provide the complete `/chat/completions` URL, including `api-version` if required. The model can be empty for deployment URLs.
+- Anthropic: use `https://api.anthropic.com` and an explicit available model name.
+
+Config location:
+- Unix: `~/.config/howdo/config.json`
+- Windows: `%APPDATA%\howdo\config.json`
+- All platforms: `$XDG_CONFIG_HOME/howdo/config.json` when set
+
+### Credentials
+
+Provider environment variables take precedence over stored keys:
+
+| Provider | Implicit credential variable |
+|---|---|
+| OpenAI | `OPENAI_API_KEY` |
+| Azure OpenAI | `AZURE_OPENAI_API_KEY` |
+| Anthropic | `ANTHROPIC_API_KEY` |
+| Local / Other | **None** |
+
+Local and custom endpoints never receive an unrelated global OpenAI key. For custom credentials, explicitly set `api_key_env` in a profile. That variable must be present and nonempty; missing explicit credentials fail rather than silently falling back. Keys can alternatively be stored in `api_key`.
+
+Unix config files are written atomically with `0600` permissions from creation; the app's config directory is `0700`. Windows relies on the user directory's inherited access controls. Malformed/unreadable configs produce an error, not an automatic replacement wizard. Back up and repair a broken file manually. Symbolic links at the config file are refused.
+
+Remote endpoints require HTTPS by default. A trusted LAN can explicitly opt into unencrypted HTTP using `allow_insecure_http: true`; credentials and queries will then travel without transport encryption. Provider redirects are disabled so credentials cannot silently move to another endpoint.
+
+### Profiles
+
+```sh
+howdo /config --profile work
+howdo /profiles
+howdo /profiles use work
+howdo --profile local list files
+HOWDO_PROFILE=work howdo --print list files
 ```
-  === howdo Configuration ===
 
-  Select your LLM provider:
+Selection order: `--profile`, `HOWDO_PROFILE`, saved `default_profile`. Profile names use ASCII letters, digits, dots, underscores, or hyphens. Existing single-provider configs remain readable as the `default` profile and migrate only on an explicit configuration save or profile switch.
 
-    1) Local LLM (Ollama, LM Studio, etc.)
-    2) OpenAI
-    3) Azure OpenAI
-    4) Anthropic
-    5) Other (OpenAI-compatible)
+Example multi-profile config (set `OPENAI_API_KEY` outside the file):
 
-  Choice (1-5) [1]: 1
-
-  Base URL [http://127.0.0.1:1234/v1]:
-  Model name [default]:
-
-  ✓ Configuration saved to ~/.config/howdo/config.json
+```json
+{
+  "schema_version": 1,
+  "default_profile": "local",
+  "profiles": {
+    "local": {
+      "provider": "local",
+      "base_url": "http://127.0.0.1:1234/v1",
+      "model": "default"
+    },
+    "work": {
+      "provider": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-4.1-mini"
+    },
+    "proxy": {
+      "provider": "other",
+      "base_url": "https://my-proxy.example/v1",
+      "model": "my-model",
+      "api_key_env": "MY_PROXY_API_KEY"
+    }
+  }
+}
 ```
 
-Config is stored in `~/.config/howdo/config.json` (or `%APPDATA%\howdo\config.json` on Windows).
+### Model-specific request options
 
-Re-run `howdo /config` at any time to change providers.
+Temperature is omitted by default because some reasoning models reject it. OpenAI/Azure default to `max_completion_tokens`; local/custom servers default to `max_tokens`. Known OpenAI reasoning model families (`o1`, `o3`, `o4`, `gpt-5`) use the `developer` instruction role. Model capabilities vary; explicitly override options as needed inside a profile:
+
+```json
+"request_options": {
+  "token_limit": "max_completion_tokens",
+  "max_tokens": 2048,
+  "system_role": "developer",
+  "reasoning_effort": "none"
+},
+"timeout_seconds": 30
+```
+
+- `token_limit`: `auto`, `max_tokens`, or `max_completion_tokens`
+- `system_role`: `auto`, `system`, or `developer`
+- `temperature`: optional numeric value (0–2 for OpenAI-compatible providers; 0–1 for Anthropic)
+- `reasoning_effort`: optional `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`; support depends on the model
+- `max_tokens`: 1–32768; `timeout_seconds`: 1–300
+
+Anthropic uses its native system field and content blocks; OpenAI-only options are rejected. Truncated, refused, tool-use, empty, and malformed responses are never offered for execution. Raising the token limit may be necessary for reasoning models because their budget can include reasoning tokens.
 
 ## Usage
 
-![Usage example](static/usage-example.gif)
+Put options **before** the query. Once the query starts, later arguments—including flags—are treated as query text. Use `--` for a query starting with a dash or reserved option.
 
-```bash
-howdo <what you want to do in plain english>
-# or with the alias:
-q <what you want to do in plain english>
+```sh
+howdo find python files modified in the last week
+howdo --print show disk usage sorted by size
+howdo --json list files
+howdo --copy compress this folder into a tar.gz
+howdo --explain find large files
+howdo --profile work --shell /bin/zsh list files
 ```
 
-The tool will:
-1. Send your query to the LLM with your OS/shell context
-2. Display the suggested command
-3. Ask you to confirm before running
+- Interactive input requires an explicit **y**. Enter, EOF, and unrecognized answers cancel.
+- **e** opens an editor, then redisplays and rechecks the edited command before asking again. Editing never executes implicitly.
+- Obvious risky commands require typing **RUN**, not merely `y`.
+- With noninteractive stdin, the default is **print-only**, even when `y` is piped in.
+- `--print`, `--json`, and `--copy` never execute anything. JSON includes command, shell, profile, detected risks, and optional explanation.
+- `--explain` makes one extra API request. Its explanation is model-generated, can be wrong, and never changes the command. For print mode it goes to stderr; for JSON it goes into the result.
+- Requests show elapsed time in an interactive terminal; **Esc/Ctrl+C** cancels. Cancellation stops the CLI, but the provider may still finish and bill an already-submitted request.
+- The executed command's exit status is propagated. Diagnostics and review prompts go to stderr; print/JSON results go to stdout.
 
-### Examples
+Explicit automation is available, but opts into running arbitrary model-generated code:
 
-```bash
-q find all python files modified in the last week
-q compress this folder into a tar.gz
-q show disk usage sorted by size
-q kill the process running on port 3000
-q create a git branch called feature/auth
+```sh
+howdo --yes print the current date
+# For detected risky operations, both overrides are required:
+howdo --yes --allow-risky <query>
 ```
 
-## How it works
+### Shell selection
 
-Rust CLI, ~1.6MB binary. Sends one API call with a system prompt including your OS, shell, and working directory. Returns the raw command, asks y/e/n, runs it. That's it.
+`--shell` overrides `HOWDO_SHELL`, then Unix `$SHELL` or Windows `%COMSPEC%`. Fallbacks are `/bin/sh` on Unix and `cmd.exe` on Windows. PowerShell's inherited `PSModulePath` is not used to guess the calling shell.
 
-## Security
+On Windows, explicitly select PowerShell if desired:
 
-- Config file is `chmod 600` (owner-only) on Unix
-- API keys can be set via env vars (`OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) instead of saving to disk
-- Destructive commands (`rm -rf`, `dd`, `mkfs`, etc.) get an extra warning before the y/e/n prompt
-- Commands are always shown for review — nothing runs without your confirmation
+```powershell
+howdo --shell pwsh list files
+$env:HOWDO_SHELL = 'pwsh'
+```
 
-## Supported platforms
+Full executable paths are preserved. Supported names: `sh`, `bash`, `zsh`, `fish`, `dash`, `ksh`, `powershell`, `pwsh`, and `cmd`. PowerShell launches without profiles; cmd launches with AutoRun disabled. Commands execute in a child shell: `cd`, aliases, and variable assignments do not change the parent shell.
 
-- macOS (arm64, x86_64)
-- Linux (x86_64)
-- Windows (x86_64)
+Short aliases:
+
+```sh
+# Zsh: suppress glob expansion (not all shell interpretation)
+alias q='noglob howdo'
+
+# Bash: noglob is not a Bash command; quote metacharacters in queries
+alias q='howdo'
+q 'what is listening on port 8000?'
+```
+
+For Linux clipboard copying, install `wl-clipboard` on Wayland, or `xclip`/`xsel` on X11. macOS uses `pbcopy`; Windows uses PowerShell `Set-Clipboard`.
+
+## Safety and privacy
+
+**This is not a sandbox.** An accepted command runs with your account's permissions and can delete files, transmit data, or modify the system. Risk checks are conservative string/token heuristics, not a complete shell parser. They can miss dangerous commands and flag harmless ones. Always review the actual command.
+
+The app rejects multiline commands, terminal controls, invisible direction-changing formatting, malformed fences, and reasoning artifacts instead of rewriting their meaning. Well-formed single-line fenced responses can be unwrapped. It does not rewrite quoted strings, concatenate commands, or strip arbitrary comments/tokens.
+
+The selected provider receives your query, OS, shell name, and working-directory path. Explanation mode additionally sends the generated command. File contents and environment variables are not added to the prompt; configured credentials are sent as authentication headers. A subsequently executed command can access any data your account can access.
+
+Update with `howdo /update` (or explicitly `/update --yes`). Updates verify exact asset names and SHA-256 before replacing the binary and never downgrade. Failed updates return nonzero. On Windows, a uniquely named backup directory can remain until a running old executable exits.
 
 ## Development
 
-### Workflow
-
-1. Create a feature branch: `git checkout -b feat/my-change`
-2. Make changes, commit, push
-3. Open a PR against `main` — CI runs tests on macOS/Linux/Windows automatically
-4. Merge when tests pass
-5. To release: tag `main` and push — `git tag v0.x.y && git push origin v0.x.y`
-
-### Branch protection (recommended)
-
-Go to **GitHub → Settings → Branches → Add rule** for `main`:
-- ✅ Require status checks to pass before merging (select the `test` workflow)
-- ❌ Require pull request reviews (not needed for solo dev)
-- ❌ Allow force pushes
-
-This keeps `main` always releasable — CI must pass before anything lands.
-
-### Running tests locally
-
-```bash
-cargo build --release
-bash tests/test_providers.sh          # integration tests (needs python3)
-bash tests/bench.sh                   # startup time & binary size benchmarks
+```sh
+cargo fmt --all -- --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --all-targets --locked
+cargo build --release --locked
+python3 tests/test_cli.py target/release/howdo
+python3 tests/test_installers.py
+cargo audit --deny warnings             # install cargo-audit separately
+sh tests/bench.sh --runs 50
+sh tests/bench.sh --build                # optional clean build in an isolated directory
 ```
+
+On Windows, pass `target/release/howdo.exe` to the integration suite. Tests use ephemeral local ports, temporary configs, fake credentials, clipboard stubs, and installer download stubs. They never call a real LLM or install into system directories. Unix tests also exercise real terminal confirmation, editing, and cancellation. Benchmarks do not run `cargo clean` or disturb normal build artifacts.
+
+CI runs formatting, strict linting, Rust tests, release builds, and integration tests on macOS/Linux/Windows, plus dependency, shell, workflow, and minimum-Rust checks.
+
+### Releases
+
+Pushes to `main` do **not** automatically publish releases. For an intentional stable release:
+
+1. Update the package version in `Cargo.toml` and regenerate `Cargo.lock`.
+2. Commit the version change and merge through a tested PR.
+3. Tag that exact commit with the matching version and push the tag (for example, `v0.2.0`).
+
+The release workflow rejects tag/manifest/lockfile mismatches, waits for the full CI suite, builds the tagged source without editing its version, and publishes four binaries, `SHA256SUMS`, and provenance attestations. Releases are serialized to avoid publication races. Protect `main` with required CI checks and disable force pushes; optionally protect release tags too.
 
 ## License
 
