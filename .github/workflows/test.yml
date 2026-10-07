@@ -2,93 +2,97 @@ name: Test
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
     branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   test:
+    name: Test (${{ matrix.os }})
     strategy:
+      fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build
-        run: cargo build --release
-
-      - name: Run integration tests (unix)
-        if: runner.os != 'Windows'
-        run: |
-          chmod +x tests/test_providers.sh
-          ./tests/test_providers.sh ./target/release/howdo
-
-      - name: Run integration tests (windows)
-        if: runner.os == 'Windows'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Lints
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Unit tests
+        run: cargo test --all-targets --locked
+      - name: Release build
+        run: cargo build --release --locked
+      - name: Integration and installer regression tests
         shell: bash
         run: |
-          python tests/mock_server.py 9999 &
-          MOCK_PID=$!
+          BINARY=./target/release/howdo
+          if [ "${{ runner.os }}" = "Windows" ]; then BINARY="$BINARY.exe"; fi
+          python tests/test_cli.py "$BINARY"
+          python tests/test_installers.py
+      - name: Windows installer syntax
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $parseErrors = $null
+          $tokens = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/install.ps1", [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
 
-          # Wait for mock server to be ready (up to 10s)
-          for i in $(seq 1 20); do
-            if curl -s http://127.0.0.1:9999 >/dev/null 2>&1; then
-              echo "Mock server ready"
-              break
-            fi
-            sleep 0.5
-          done
+  quality:
+    name: Dependency and workflow checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        with:
+          tool: cargo-audit@0.22.2,shellcheck@0.11.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Python test-tool lint and formatting
+        run: |
+          python -m pip install -r tests/requirements-dev.txt
+          ruff check tests
+          ruff format --check tests
+      - name: Dependency audit
+        run: cargo audit --deny warnings
+      - name: Workflow lint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Shell lint
+        run: shellcheck install.sh tests/test_providers.sh tests/bench.sh
 
-          TMPDIR=$(mktemp -d)
-          mkdir -p "$TMPDIR/howdo"
-          CONFIG="$TMPDIR/howdo/config.json"
-          BINARY="./target/release/howdo.exe"
-          PASS=0; FAIL=0
-
-          run_test() {
-            local name="$1" expected="$2"
-            output=$(echo "n" | XDG_CONFIG_HOME="$TMPDIR" "$BINARY" test query 2>&1 || true)
-            if echo "$output" | grep -q "$expected"; then
-              echo "  PASS: $name"; PASS=$((PASS + 1))
-            else
-              echo "  FAIL: $name"; echo "    Got: $output"; FAIL=$((FAIL + 1))
-            fi
-          }
-
-          echo '{"provider":"local","base_url":"http://127.0.0.1:9999/v1","model":"default"}' > "$CONFIG"
-          run_test "Local LLM" "mock-openai-ok"
-
-          echo '{"provider":"openai","base_url":"http://127.0.0.1:9999/v1","model":"gpt-4o-mini","api_key":"sk-test"}' > "$CONFIG"
-          run_test "OpenAI" "mock-openai-ok"
-
-          echo '{"provider":"azure_openai","base_url":"http://127.0.0.1:9999/openai/deployments/gpt-4/chat/completions?api-version=2024-12-01-preview","model":"","api_key":"azure-test"}' > "$CONFIG"
-          run_test "Azure OpenAI" "mock-openai-ok"
-
-          echo '{"provider":"anthropic","base_url":"http://127.0.0.1:9999","model":"claude-sonnet-4-20250514","api_key":"sk-ant-test"}' > "$CONFIG"
-          run_test "Anthropic" "mock-anthropic-ok"
-
-          echo '{"provider":"other","base_url":"http://127.0.0.1:9999/v1","model":"mixtral","api_key":"other-test"}' > "$CONFIG"
-          run_test "Other" "mock-openai-ok"
-
-          version=$("$BINARY" --version 2>&1)
-          if echo "$version" | grep -qE "^howdo [0-9]"; then
-            echo "  PASS: --version"; PASS=$((PASS + 1))
-          else
-            echo "  FAIL: --version"; FAIL=$((FAIL + 1))
-          fi
-
-          echo ""
-          echo "Results: $PASS passed, $FAIL failed"
-          [ "$FAIL" -eq 0 ] || exit 1
+  msrv:
+    name: Minimum supported Rust (1.89)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable action; explicit MSRV
+        with:
+          toolchain: 1.89.0
+      - run: cargo check --all-targets --locked
